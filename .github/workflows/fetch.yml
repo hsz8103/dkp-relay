@@ -1,0 +1,59 @@
+name: fetch-devkit-tools
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: write
+    steps:
+      - name: Pull devkitARM image and bake 3ds libs
+        run: |
+          docker pull devkitpro/devkitarm:latest
+          docker run --name bake devkitpro/devkitarm:latest sh -c "dkp-pacman -Syu --noconfirm 3ds-dev || pacman -Syu --noconfirm 3ds-dev"
+          docker commit bake devkitarm-3ds:baked
+
+      - name: Verify toolchain by compiling 3ds-examples
+        run: |
+          git clone --depth 1 https://github.com/devkitPro/3ds-examples.git
+          cd 3ds-examples
+          docker run --rm -v "$PWD":/src -w /src devkitarm-3ds:baked make -k -j"$(nproc)" || true
+          echo "3dsx built: $(find . -name '*.3dsx' | wc -l)"
+          cd ..
+          mkdir -p 3dsx-evidence
+          find 3ds-examples -name "*.3dsx" -exec cp {} 3dsx-evidence/ \;
+          zip -q -r 3dsx-evidence.zip 3dsx-evidence
+          ls -lh 3dsx-evidence.zip
+
+      - name: Pack image
+        run: |
+          docker save devkitarm-3ds:baked | gzip -1 > devkitarm-3ds.tar.gz
+          ls -lh devkitarm-3ds.tar.gz
+
+      - name: Fetch Git for Windows
+        run: |
+          URL=$(curl -s https://api.github.com/repos/git-for-windows/git/releases/latest | grep -o '"browser_download_url": *"https[^"]*"' | grep '64-bit\.exe' | grep -v Portable | head -1 | sed 's/.*"\(https[^"]*\)".*/\1/')
+          echo "URL: $URL"
+          curl -sL -o git-win-64bit.exe "$URL"
+          ls -lh git-win-64bit.exe
+
+      - name: Fetch FFmpeg
+        run: |
+          curl -sL -o ffmpeg-release-full.7z https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.7z
+          ls -lh ffmpeg-release-full.7z
+
+      - name: Create release with all assets
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: tools-bundle
+          name: devkit tools bundle (devkitARM+3ds-dev / git / ffmpeg / 3dsx evidence)
+          files: |
+            devkitarm-3ds.tar.gz
+            git-win-64bit.exe
+            ffmpeg-release-full.7z
+            3dsx-evidence.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
